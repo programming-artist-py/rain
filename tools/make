@@ -1,0 +1,52 @@
+import argparse
+import os
+import subprocess
+import sys
+import shutil
+
+to_write = """this is a rain project created using the Rain Make Tool *RMT.
+to compile this project, use the Rain Build Tool *RBT.
+to run without compiling this project, use the Rain Run Tool *RRT.
+
+RMT:
+
+rainc make <project_name>
+
+RBT:
+
+rainc build [-c/--clean] -o/--output <output_file_name> <input_file_name> (for building only one file)
+rainc build [-c/--clean] -m/--multiple -o/--output <output_file_name> "{<input_filename_a>, <input_filename_b>, <input_filename_c>}" (for building with multiple files)
+rainc build --clear (clears build and dist folder)
+
+RRT:
+
+rainc run <file_name> (RRT can only run 1 file.)"""
+
+main_rain = """:@maketool {
+   PRINT 'Made by Rain Make Tool'
+}
+@maketool:
+"""
+
+def make_folder(path, name):
+    folder_path = os.path.join(path, name)
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    return folder_path
+
+def main(project_name):
+    fp = make_folder(os.getcwd(), project_name)
+    print(f"[make] Created project folder: {project_name}")
+    with open(os.path.join(fp, "main.rain"), "w", encoding="utf-8") as f:
+        f.write(main_rain)
+    print("[make] Created main.rain")
+    with open(os.path.join(fp, "README.txt"), "w", encoding="utf-8") as f:
+        f.write(to_write)
+    print("[make] Created README.txt")
+    print(f"[make] Project '{project_name}' setup complete.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Rain Make Tool")
+    parser.add_argument("project_name", help="Name of the project folder to create")
+    args = parser.parse_args()
+    main(args.project_name)

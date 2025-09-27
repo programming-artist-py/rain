@@ -1,0 +1,110 @@
+import argparse
+import os
+import subprocess
+import sys
+import shutil
+
+if os.name == "nt":
+    rainc_home = os.path.join(os.environ["LOCALAPPDATA"], "rainc")
+else:
+    rainc_home = os.path.expanduser("~/.rainc")
+
+def transpile_rain_to_python(rain_files, output_py):
+    """Takes one or more .rain files and transpiles into Python code."""
+    if isinstance(rain_files, str):
+        rain_files = [rain_files]
+
+    all_code = []
+    file_base_dirs = []
+
+    for rf in rain_files:
+        rf_path = os.path.abspath(rf)
+        base_dir = os.path.dirname(rf_path)
+        file_base_dirs.append(base_dir)
+        with open(rf_path, encoding="utf-8") as f:
+            all_code.extend(f.readlines())
+
+    # Use the common parent dir if multiple files; otherwise the single base_dir
+    if len(set(file_base_dirs)) == 1:
+        common_base = file_base_dirs[0]
+    else:
+        # Find a common parent folder
+        common_base = os.path.commonpath(file_base_dirs)
+
+    with open(output_py, "w", encoding="utf-8") as f:
+        f.write(f"import sys, os\nsys.path.insert(0, r'{rainc_home}')\nfrom main import objectify, run_objectified\n\n")
+        f.write("code = [\n")
+        for line in all_code:
+            escaped = line.rstrip("\n").replace("\\", "\\\\").replace('"', '\\"')
+            f.write(f'    "{escaped}",\n')
+        f.write("]\n\n")
+        f.write(f"objs, calls = objectify(code, base_dir=r'{common_base}')\n")
+        f.write("run_objectified(objs, calls)\n")
+
+def build_executable(python_file, output_name):
+    cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", output_name, python_file]
+    subprocess.run(cmd, check=True)
+
+def clean():
+    for folder in ["build", "dist"]:
+        if os.path.exists(folder):
+            shutil.rmtree(folder)
+
+def parse_multiple_files(files_arg):
+    # Remove braces { } if present, then split by comma
+    files_arg = files_arg.strip()
+    if files_arg.startswith("{") and files_arg.endswith("}"):
+        files_arg = files_arg[1:-1]
+    files = [f.strip() for f in files_arg.split(",") if f.strip()]
+    return [os.path.abspath(f) for f in files]
+
+def main():
+    parser = argparse.ArgumentParser(description="Rain Compiler CLI Tool")
+    parser.add_argument("file", nargs="?", help="The .rain file to compile (or file list if using --multiple)")
+    parser.add_argument("-o", "--output", help="Output executable name (without extension)")
+    parser.add_argument("-m", "--multiple", action="store_true", help="Enable multiple file mode (comma-separated list)")
+    parser.add_argument("--platform", choices=["win", "linux"], default="win",
+                        help="Target platform: 'win' for .exe, 'linux' for .bin")
+    parser.add_argument("-c", "--clean", action="store_true", help="Clean previous builds before compiling")
+    parser.add_argument("--clear", action="store_true", help="Clears previous builds and exits.")
+    args = parser.parse_args()
+
+    if args.clean or args.clear:
+        clean()
+        print("[rainc] Cleaned previous builds.")
+        if args.clear:
+            sys.exit(0)
+
+    if not args.clear:
+        if not args.file:
+            parser.error("the following arguments are required: file")
+        if not args.output:
+            parser.error("the following arguments are required: -o/--output")
+
+        # Handle single vs multiple file mode
+        if args.multiple:
+            rain_files = parse_multiple_files(args.file)
+        else:
+            rain_files = [os.path.abspath(args.file)]
+
+        output_name = args.output
+        if output_name.endswith(".exe") or output_name.endswith(".bin"):
+            output_name = output_name.rsplit(".", 1)[0]
+        if args.platform == "win":
+            output_name += ".exe"
+        else:
+            output_name += ".bin"
+
+        temp_py = os.path.join(os.path.dirname(__file__), "temp_rain_program.py")
+        spec_path = os.path.join(os.getcwd(), f"{output_name}.spec")
+        transpile_rain_to_python(rain_files, temp_py)
+        build_executable(temp_py, output_name)
+        os.remove(temp_py)
+        if os.path.exists(spec_path):
+            print(f"[rainc] Removed {output_name}.spec file")
+            os.remove(spec_path)
+
+        print(f"[rainc] build complete: {output_name}")
+
+if __name__ == "__main__":
+    main()
