@@ -1,0 +1,123 @@
+import os
+import sys
+import urllib.request
+import shutil
+
+def get_rainc_dir():
+    if os.name == "nt":
+        return os.path.join(os.getenv("LOCALAPPDATA"), "rainc")
+    else:
+        return os.path.expanduser("~/.rainc")
+
+def get_paths():
+    base = get_rainc_dir()
+    packages = os.path.join(base, "packages")
+    incl_dir = os.path.join(base, "incl")
+    os.makedirs(packages, exist_ok=True)
+    os.makedirs(incl_dir, exist_ok=True)
+    return packages, os.path.join(incl_dir, "INCLUDE")
+
+def read_include(incl_file):
+    if not os.path.exists(incl_file):
+        return []
+    with open(incl_file, "r", encoding="utf-8") as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+def write_include(incl_file, lines):
+    with open(incl_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + ("\n" if lines else ""))
+
+def install(pkg, url):
+    packages, incl_file = get_paths()
+    zip_path = os.path.join(packages, f"{pkg}.zip")
+
+    print(f"[rpm] Downloading {url} -> {zip_path}")
+    urllib.request.urlretrieve(url, zip_path)
+
+    lines = [ln for ln in read_include(incl_file) if not ln.startswith(pkg + " @")]
+    lines.append(f'{pkg} @ "packages/{pkg}.zip"')
+    write_include(incl_file, lines)
+    print(f"[rpm] Installed {pkg}")
+
+def uninstall(pkg):
+    packages, incl_file = get_paths()
+    zip_path = os.path.join(packages, f"{pkg}.zip")
+
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+        print(f"[rpm] Removed {zip_path}")
+
+    lines = [ln for ln in read_include(incl_file) if not ln.startswith(pkg + " @")]
+    write_include(incl_file, lines)
+    print(f"[rpm] Uninstalled {pkg}")
+
+def list_packages():
+    _, incl_file = get_paths()
+    lines = read_include(incl_file)
+    if not lines:
+        print("[rpm] No packages installed")
+    else:
+        print("[rpm] Installed packages:")
+        for ln in lines:
+            print("  " + ln)
+
+def update(pkg, url):
+    print(f"[rpm] Updating {pkg}")
+    install(pkg, url)
+
+def clear():
+    packages, incl_file = get_paths()
+    if os.path.exists(packages):
+        shutil.rmtree(packages)
+    os.makedirs(packages, exist_ok=True)
+    if os.path.exists(incl_file):
+        os.remove(incl_file)
+    print("[rpm] Cleared all packages and INCLUDE file")
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: rpm <command> [...]")
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    if cmd == "help" or cmd == "-h":
+        print("""Rain Package Manager (rpm)
+Usage: rpm <command> [arguments]
+Commands:
+    install <pkg> <url>    Install a package from the given URL
+    uninstall <pkg>        Uninstall the specified package
+    list                   List all installed packages
+    update <pkg> <url>     Update the specified package from the given URL
+    clear                  Clear all installed packages and the INCLUDE file
+    help | -h              Show this help message""")
+        sys.exit(0)
+    if cmd == "install":
+        if len(sys.argv) != 4:
+            print("Usage: rpm install <pkg> <url>")
+            sys.exit(1)
+        install(sys.argv[2], sys.argv[3])
+
+    elif cmd == "uninstall":
+        if len(sys.argv) != 3:
+            print("Usage: rpm uninstall <pkg>")
+            sys.exit(1)
+        uninstall(sys.argv[2])
+
+    elif cmd == "list":
+        list_packages()
+
+    elif cmd == "update":
+        if len(sys.argv) != 4:
+            print("Usage: rpm update <pkg> <url>")
+            sys.exit(1)
+        update(sys.argv[2], sys.argv[3])
+
+    elif cmd == "clear":
+        clear()
+
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

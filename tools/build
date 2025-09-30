@@ -1,62 +1,130 @@
+# rain built tool, rbt.
 import argparse
 import os
 import subprocess
 import sys
 import shutil
+import zipfile
 
 if os.name == "nt":
     rainc_home = os.path.join(os.environ["LOCALAPPDATA"], "rainc")
 else:
     rainc_home = os.path.expanduser("~/.rainc")
 
-def transpile_rain_to_python(rain_files, output_py):
-    """Takes one or more .rain files and transpiles into Python code."""
+
+def load_local_includes(include_file):
+    """Load package includes from a local INCLUDE file."""
+    includes = {}
+    if not include_file or not os.path.isfile(include_file):
+        return includes
+    include_dir = os.path.dirname(include_file)
+    with open(include_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or "@" not in line:
+                continue
+            pkg, path = line.split("@", 1)
+            pkg = pkg.strip()
+            path = path.strip().strip('"')
+            # Resolve relative paths
+            if path.startswith("packages/") or path.startswith("incl/"):
+                full_path = os.path.join(rainc_home, path)
+            else:
+                full_path = os.path.abspath(os.path.join(include_dir, path))
+            if not os.path.isfile(full_path):
+                raise FileNotFoundError(f"Package zip `{full_path}` does not exist.")
+            includes[pkg] = full_path
+    return includes
+
+
+def transpile_rain_to_python(rain_files, output_py, includes=None):
+    """Transpile .rain files to Python and set up INCLUDES paths for --onedir."""
     if isinstance(rain_files, str):
         rain_files = [rain_files]
 
     all_code = []
-    file_base_dirs = []
+    base_dirs = []
 
+    # Gather code and base directories
     for rf in rain_files:
         rf_path = os.path.abspath(rf)
         base_dir = os.path.dirname(rf_path)
-        file_base_dirs.append(base_dir)
+        base_dirs.append(base_dir)
         with open(rf_path, encoding="utf-8") as f:
-            all_code.extend(f.readlines())
+            lines = f.readlines()
+        # Rewrite ~incl/<pkg> → ~@BUILT_PACK/<pkg>
+        if includes:
+            for pkg in includes:
+                lines = [line.replace(f"~incl/{pkg}", f"~@BUILT_PACK/{pkg}") for line in lines]
+        all_code.extend(lines)
 
-    # Use the common parent dir if multiple files; otherwise the single base_dir
-    if len(set(file_base_dirs)) == 1:
-        common_base = file_base_dirs[0]
-    else:
-        # Find a common parent folder
-        common_base = os.path.commonpath(file_base_dirs)
+    common_base = base_dirs[0] if len(set(base_dirs)) == 1 else os.path.commonpath(base_dirs)
 
+    # Write temp Python script
     with open(output_py, "w", encoding="utf-8") as f:
-        f.write(f"import sys, os\nsys.path.insert(0, r'{rainc_home}')\nfrom main import objectify, run_objectified\n\n")
+        f.write("import sys, os\n")
+        f.write(f"sys.path.insert(0, r'{rainc_home}')\n")
+        f.write("import main\n\n")
+        # Build INCLUDES dictionary to point to @BUILT_PACK inside dist folder
+        f.write("exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)\n")
+        f.write("INCLUDES = {\n")
+        if includes:
+            for pkg in includes:
+                f.write(f"    '{pkg}': os.path.join(exe_dir, '@BUILT_PACK', '{pkg}'),\n")
+        f.write("}\n\n")
+        f.write("main.INCLUDES = INCLUDES\n\n")
         f.write("code = [\n")
         for line in all_code:
             escaped = line.rstrip("\n").replace("\\", "\\\\").replace('"', '\\"')
             f.write(f'    "{escaped}",\n')
         f.write("]\n\n")
-        f.write(f"objs, calls = objectify(code, base_dir=r'{common_base}')\n")
-        f.write("run_objectified(objs, calls)\n")
+        f.write(f"objs, calls = main.objectify(code, base_dir=r'{common_base}')\n")
+        f.write("main.run_objectified(objs, calls)\n")
 
-def build_executable(python_file, output_name):
-    cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", output_name, python_file]
+
+def build_executable(python_file, output_name, includes=None):
+    """Build the exe in --onedir mode and copy included packages."""
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "--name", output_name,
+        "--onedir",
+        python_file
+    ]
     subprocess.run(cmd, check=True)
+
+    # Copy packages into dist/<output_name>/@BUILT_PACK/<pkg>
+    dist_dir = os.path.join(os.getcwd(), "dist", output_name)
+    built_pack_dir = os.path.join(dist_dir, "@BUILT_PACK")
+    os.makedirs(built_pack_dir, exist_ok=True)
+
+    # Add README for clarity
+    with open(os.path.join(dist_dir, "README.md"), "w", encoding="utf-8") as f:
+        f.write("about the @BUILT_PACK Directory\n")
+        f.write("Do not delete this folder, as it is required for the program to run correctly.\n")
+        f.write("If you want to add more packages, modify your project's INCLUDE file and rebuild the executable.")
+
+    if includes:
+        for pkg, zip_path in includes.items():
+            pkg_dir = os.path.join(built_pack_dir, pkg)
+            os.makedirs(pkg_dir, exist_ok=True)
+            shutil.unpack_archive(zip_path, pkg_dir)
+
+    print(f"[rainc] Packages copied to {built_pack_dir}")
+
 
 def clean():
     for folder in ["build", "dist"]:
         if os.path.exists(folder):
             shutil.rmtree(folder)
 
+
 def parse_multiple_files(files_arg):
-    # Remove braces { } if present, then split by comma
     files_arg = files_arg.strip()
     if files_arg.startswith("{") and files_arg.endswith("}"):
         files_arg = files_arg[1:-1]
     files = [f.strip() for f in files_arg.split(",") if f.strip()]
     return [os.path.abspath(f) for f in files]
+
 
 def main():
     parser = argparse.ArgumentParser(description="Rain Compiler CLI Tool")
@@ -67,6 +135,8 @@ def main():
                         help="Target platform: 'win' for .exe, 'linux' for .bin")
     parser.add_argument("-c", "--clean", action="store_true", help="Clean previous builds before compiling")
     parser.add_argument("--clear", action="store_true", help="Clears previous builds and exits.")
+    parser.add_argument("-i", "--include", type=str, help="Optional local INCLUDE file specifying packages to bundle with the build.")
+
     args = parser.parse_args()
 
     if args.clean or args.clear:
@@ -82,29 +152,29 @@ def main():
             parser.error("the following arguments are required: -o/--output")
 
         # Handle single vs multiple file mode
-        if args.multiple:
-            rain_files = parse_multiple_files(args.file)
-        else:
-            rain_files = [os.path.abspath(args.file)]
+        rain_files = parse_multiple_files(args.file) if args.multiple else [os.path.abspath(args.file)]
 
         output_name = args.output
         if output_name.endswith(".exe") or output_name.endswith(".bin"):
             output_name = output_name.rsplit(".", 1)[0]
-        if args.platform == "win":
-            output_name += ".exe"
-        else:
-            output_name += ".bin"
+        output_name += ".exe" if args.platform == "win" else ".bin"
 
         temp_py = os.path.join(os.path.dirname(__file__), "temp_rain_program.py")
         spec_path = os.path.join(os.getcwd(), f"{output_name}.spec")
-        transpile_rain_to_python(rain_files, temp_py)
-        build_executable(temp_py, output_name)
+
+        include_file = os.path.abspath(args.include) if args.include else None
+        includes = load_local_includes(include_file)
+
+        transpile_rain_to_python(rain_files, temp_py, includes=includes)
+        build_executable(temp_py, output_name, includes=includes)
+
         os.remove(temp_py)
         if os.path.exists(spec_path):
             print(f"[rainc] Removed {output_name}.spec file")
             os.remove(spec_path)
 
         print(f"[rainc] build complete: {output_name}")
+
 
 if __name__ == "__main__":
     main()

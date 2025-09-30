@@ -1,3 +1,4 @@
+import zipfile
 import os
 
 class InvalidArguments(Exception):
@@ -5,7 +6,31 @@ class InvalidArguments(Exception):
 
 included_files = set()
 
-def objectify(code, base_dir=".", included=None):
+def get_rainc_dir():
+    if os.name == "nt":
+        return os.path.join(os.getenv("LOCALAPPDATA"), "rainc")
+    else:
+        return os.path.expanduser("~/.rainc")
+
+def load_includes():
+    incl_file = os.path.join(get_rainc_dir(), "incl", "INCLUDE")
+    packages_dir = os.path.join(get_rainc_dir(), "packages")
+    includes = {}
+    if not os.path.exists(incl_file):
+        return includes
+    with open(incl_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or "@" not in line:
+                continue
+            pkg, path = line.split("@", 1)
+            pkg = pkg.strip()
+            path = path.strip().strip('"')
+            full_path = os.path.normpath(os.path.join(get_rainc_dir(), path))
+            includes[pkg] = full_path
+    return includes
+
+def objectify(code, base_dir=".", included=None, debug=False):
     if included is None:
         included = set()
     objects = {}
@@ -33,20 +58,68 @@ def objectify(code, base_dir=".", included=None):
                 i += 1
             objects[name] = content
         elif line.startswith("~"):
-            filename = os.path.normpath(os.path.join(base_dir, line[1:].strip()))
-            if filename in included:
-                i += 1
-                continue
-            included.add(filename)
+            ref = line[1:].strip()
+            if ref.startswith("incl/"):
+                pkg = ref.split("/", 1)[1]
+                if debug:
+                    print("[runtime] Including package:", pkg)
+                if pkg not in INCLUDES:
+                    raise InvalidArguments(f"Package `{pkg}` not found in INCLUDE file.")
 
-            if not os.path.isfile(filename):
-                raise InvalidArguments(f"Referenced file `{filename}` does not exist.")
-            with open(filename, "r") as f:
-                ref_code = f.readlines()
+                zip_path = INCLUDES[pkg]
+                if not os.path.isfile(zip_path):
+                    raise InvalidArguments(f"Package zip `{zip_path}` does not exist.")
 
-            ref_objects, ref_calls = objectify(ref_code, os.path.dirname(filename), included)
-            objects.update(ref_objects)
-            calls.extend(ref_calls)
+                with zipfile.ZipFile(zip_path, "r") as z:
+                    # Load all .rain files in the zip
+                    for name in z.namelist():
+                        if not name.endswith(".rain"):
+                            continue
+                        with z.open(name) as f:
+                            ref_code = [line.decode("utf-8").strip("\n") for line in f.readlines()]
+                        ref_objects, ref_calls = objectify(ref_code, base_dir=".", included=included)
+                        objects.update(ref_objects)
+                        calls.extend(ref_calls)
+            elif ref.startswith("@BUILT_PACK/"):
+                pkg = ref.split("/", 1)[1]
+                if debug:
+                    print("[runtime] Including built package:", pkg)
+                if pkg not in INCLUDES:
+                    raise InvalidArguments(f"Built package `{pkg}` not found in INCLUDES.")
+
+                folder_path = INCLUDES[pkg]
+                if not os.path.isdir(folder_path):
+                    raise InvalidArguments(f"Built package folder `{folder_path}` does not exist.")
+
+                # Walk through the folder and include all .rain files
+                for root, _, files in os.walk(folder_path):
+                    for file in files:
+                        if not file.endswith(".rain"):
+                            continue
+                        filename = os.path.join(root, file)
+                        if filename in included:
+                            continue
+                        included.add(filename)
+                        with open(filename, "r", encoding="utf-8") as f:
+                            ref_code = f.readlines()
+                        ref_objects, ref_calls = objectify(ref_code, os.path.dirname(filename), included, debug=debug)
+                        objects.update(ref_objects)
+                        calls.extend(ref_calls)
+            else:
+                filename = os.path.normpath(os.path.join(base_dir, line[1:].strip()))
+                if filename in included:
+                    i += 1
+                    continue
+                included.add(filename)
+
+                if not os.path.isfile(filename):
+                    raise InvalidArguments(f"Referenced file `{filename}` does not exist.")
+                with open(filename, "r") as f:
+                    ref_code = f.readlines()
+
+                ref_objects, ref_calls = objectify(ref_code, os.path.dirname(filename), included)
+                objects.update(ref_objects)
+                calls.extend(ref_calls)
         elif ":" in line:
             call_name, args_str = line.split(":", 1)
             call_name = call_name.strip()
@@ -126,5 +199,6 @@ if __name__ == "__main__":
     with open(args.file) as f:
         code = f.readlines()
 
-    objs, calls = objectify(code, base_dir=os.path.dirname(os.path.abspath(args.file)))
+    INCLUDES = load_includes()
+    objs, calls = objectify(code, base_dir=os.path.dirname(os.path.abspath(args.file)), debug=args.debug)
     run_objectified(objs, calls, debug=args.debug)

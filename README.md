@@ -50,3 +50,7 @@ To utilise the Rain project, type in:
     rainc -h
 
 into a terminal and follow the help instructions.
+
+
+Rain Syntax
+----------------

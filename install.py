@@ -81,6 +81,7 @@ home = os.path.dirname(os.path.abspath(__file__))
 main_py = os.path.join(home, "main.py")
 build_tool = os.path.join(home, "tools", "build")
 make_tool = os.path.join(home, "tools", "make")
+rpm = os.path.join(home, "tools", "rpm")
 
 if command in ("-h", "help"):
     print("""Rain CLI Tool
@@ -104,6 +105,8 @@ elif command == "run":
     subprocess.run([sys.executable, main_py] + args)
 elif command == "make":
     subprocess.run([sys.executable, make_tool] + args)
+elif command == "rpm":
+    subprocess.run([sys.executable, rpm] + args)
 elif command in ("uninstall", "-u"):
     uninstall()
     sys.exit(0)
