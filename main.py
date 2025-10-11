@@ -128,9 +128,10 @@ def objectify(code, base_dir=".", included=None, debug=False):
                 with open(filename, "r") as f:
                     ref_code = f.readlines()
 
-                ref_objects, ref_calls = objectify(ref_code, os.path.dirname(filename), included)
+                ref_objects, ref_calls, ref_parents = objectify(ref_code, os.path.dirname(filename), included)
                 objects.update(ref_objects)
                 calls.extend(ref_calls)
+                parents.update(ref_parents)
         elif ":" in line:
             call_name, args_str = line.split(":", 1)
             call_name = call_name.strip()
