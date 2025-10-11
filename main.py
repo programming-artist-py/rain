@@ -88,9 +88,10 @@ def objectify(code, base_dir=".", included=None, debug=False):
                             continue
                         with z.open(name) as f:
                             ref_code = [line.decode("utf-8").strip("\n") for line in f.readlines()]
-                        ref_objects, ref_calls = objectify(ref_code, base_dir=".", included=included)
+                        ref_objects, ref_calls, ref_parents = objectify(ref_code, base_dir=".", included=included)
                         objects.update(ref_objects)
                         calls.extend(ref_calls)
+                        parents.update(ref_parents)
             elif ref.startswith("@BUILT_PACK/"):
                 pkg = ref.split("/", 1)[1]
                 if debug:
