@@ -113,9 +113,10 @@ def objectify(code, base_dir=".", included=None, debug=False):
                         included.add(filename)
                         with open(filename, "r", encoding="utf-8") as f:
                             ref_code = f.readlines()
-                        ref_objects, ref_calls = objectify(ref_code, os.path.dirname(filename), included, debug=debug)
+                        ref_objects, ref_calls, ref_parents = objectify(ref_code, os.path.dirname(filename), included, debug=debug)
                         objects.update(ref_objects)
                         calls.extend(ref_calls)
+                        parents.update(ref_parents)
             else:
                 filename = os.path.normpath(os.path.join(base_dir, line[1:].strip()))
                 if filename in included:
