@@ -38,6 +38,10 @@ def uninstall():
         install_dir = os.path.expanduser("~/.rainc")
         symlink_path = "/usr/local/bin/rainc"
 
+    yesorno = input("Are you sure you want to uninstall rain+rainc? (y/N) ")
+    if yesorno != "y" and yesorno != "Y":
+        print(f"answer: {yesorno}, assuming false, cancelling uninstall")
+        exit(1)
     # Remove installation folder
     if os.path.exists(install_dir):
         shutil.rmtree(install_dir)
