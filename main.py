@@ -4,6 +4,12 @@ import os
 class InvalidArguments(Exception):
     pass
 
+class ParentNotFound(Exception):
+    pass
+
+class InvalidCommand(Exception):
+    pass
+
 included_files = set()
 
 def get_rainc_dir():
@@ -34,6 +40,7 @@ def objectify(code, base_dir=".", included=None, debug=False):
     if included is None:
         included = set()
     objects = {}
+    parents = {}
     calls = []
     code = [line.strip() for line in code if line.strip()]
     i = 0
@@ -45,6 +52,10 @@ def objectify(code, base_dir=".", included=None, debug=False):
         elif line.startswith(":") and "{" in line:
             # Object definition
             name = line.split(":", 1)[1].split("{", 1)[0].strip()
+            if ">>" in name:
+                name = line.split(">>", 1)[0].replace(" ", "").replace(":", "")
+                parent = line.split(">>", 1)[1].replace(" ", "").replace("{", "")
+                parents[name] = parent
             content = []
             i += 1
             while i < len(code):
@@ -130,32 +141,58 @@ def objectify(code, base_dir=".", included=None, debug=False):
                 args = [arg.strip() for arg in args_inside.split(";") if arg.strip()]
             calls.append((call_name, args))
         i += 1
-    return objects, calls
+    return objects, calls, parents
 
-def run_objectified(objects, calls, debug=False):
+def run_objectified(objects, calls, parents, debug=False):
     variables = {"default": {"type": "int", "value": 0, "mut": False}}
-    for call_name, call_args in calls:
-        if call_name not in objects:
-            raise InvalidArguments(f"Object `{call_name}` is not defined.")
-        # Map arguments to (1), (2), ...
-        arg_vars = {f"({i+1})": arg for i, arg in enumerate(call_args)}
-        vars_copy = variables.copy()
-        vars_copy.update(arg_vars)
-        # Run object commands
-        for command_line in objects[call_name]:
+
+    # Check that all parents exist
+    for child, parent in parents.items():
+        if parent not in objects:
+            spacing = (len(child)) + (len(parent) / 1.2) + 1
+            raise ParentNotFound(f"parent.unknown({parent})\n:{child} >> {parent}\n{" " * (int(spacing))}^^^\n`{parent}` is not a defined object")
+
+    def run_object(name, vars_copy):
+        """Run an object and its parent chain in order."""
+        # If this object has a parent, run it first
+        if name in parents:
+            parent = parents[name]
+            if debug:
+                print(f"[inherit] {name} inherits from {parent}")
+            run_object(parent, vars_copy)
+
+        # Now run the current object
+        for command_line in objects[name]:
             parts = command_line.split()
             if not parts:
                 continue
             cmd, *args = parts
-            run_command(vars_copy, cmd, args)
+            run_command(vars_copy, cmd, args, name)
             if debug:
                 print(vars_copy)
+
+    # Handle calls
+    for call_name, call_args in calls:
+        if call_name not in objects:
+            raise InvalidArguments(f"Object `{call_name}` is not defined.")
+        if debug:
+            print(f"[call] Running `{call_name}`")
+
+        # Map mutable args to (1), (2), ...
+        arg_vars = {f"({i+1})": arg for i, arg in enumerate(call_args)}
+        vars_copy = variables.copy()
+        vars_copy.update(arg_vars)
+
+        run_object(call_name, vars_copy)
+
         variables.update(vars_copy)
 
-def run_command(variables, command, args):
+def run_command(variables, command, args, object_name):
     if command == "SET":
         if len(args) != 2:
-            raise InvalidArguments("SET requires 2 arguments.")
+            args_string = " ".join(args)
+            spacing = 3 + len(args_string) / 2
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nSET {args_string}\n{" "*int(spacing)}^^^\ncommand SET only accepts 2 arguments, VAR and VAL.")
         key, val = args
         if val in variables:
             val = variables[val]
@@ -167,27 +204,41 @@ def run_command(variables, command, args):
         variables[key] = val
     elif command == "ADD":
         if len(args) != 3:
-            raise InvalidArguments("ADD requires 3 arguments.")
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nSET {args_string}\n{" "*int(spacing)}^^^\ncommand ADD only accepts 3 arguments, VAROUT, VARINa and VARINb")
         target, a, b = args
         val_a = int(variables.get(a, a))
         val_b = int(variables.get(b, b))
         variables[target] = val_a + val_b
     elif command == "PRINT":
+        stopped = False
         output = []
         for arg in args:
             argument = arg
             if arg in variables:
                 argument = str(variables[argument])
             argument = str(argument)
-            
+            if argument.startswith("(") and argument.endswith(")"):
+                if argument not in variables:
+                    print(f"mutable.unknown({argument.replace("(", "").replace(")", "")})")
+                    stopped = True
             if argument.startswith('"') and arg.endswith('"'):
                 argument = arg.strip('"')
             elif argument.startswith("'") and arg.endswith("'"):
                 argument = argument.strip("'")
             output.append(argument)
-        print(" ".join(output))
+        if not stopped:
+            print(" ".join(output))
     else:
-        raise InvalidArguments(f"Unknown command `{command}`.")
+        command = command.replace(" ", "")
+        if len(command) <= 3:
+            spacing = 0
+            if spacing < 0:
+                spacing = 0
+        else:
+            spacing = int(len(command) / 2) - 1
+            if spacing < 0:
+                spacing = 0
+        raise InvalidCommand(f"command.unknown({command})\n{command}\n{" "*int(spacing)}^^^\ninvalid command `{command}` in object `{object_name}`")
 
 if __name__ == "__main__":
     import argparse
@@ -200,5 +251,5 @@ if __name__ == "__main__":
         code = f.readlines()
 
     INCLUDES = load_includes()
-    objs, calls = objectify(code, base_dir=os.path.dirname(os.path.abspath(args.file)), debug=args.debug)
-    run_objectified(objs, calls, debug=args.debug)
+    objs, calls, parents = objectify(code, base_dir=os.path.dirname(os.path.abspath(args.file)), debug=args.debug)
+    run_objectified(objs, calls, parents, debug=args.debug)
