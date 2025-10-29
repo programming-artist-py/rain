@@ -1,15 +1,10 @@
 import zipfile
 import os
 
-class InvalidArguments(Exception):
-    pass
-
-class ParentNotFound(Exception):
-    pass
-
-class InvalidCommand(Exception):
-    pass
-
+class InvalidArguments(Exception): pass
+class ParentNotFound(Exception): pass
+class InvalidCommand(Exception): pass
+class IncludesNotSpecifiedUponNeed(Exception): pass
 included_files = set()
 
 def get_rainc_dir():
@@ -34,6 +29,30 @@ def load_includes():
             path = path.strip().strip('"')
             full_path = os.path.normpath(os.path.join(get_rainc_dir(), path))
             includes[pkg] = full_path
+    return includes
+
+def load_from_include_file(incl_path):
+    """Load include definitions from a provided INCL file, always relative to the rainc dir."""
+    includes = {}
+    rainc_dir = get_rainc_dir()
+
+    if not os.path.exists(incl_path):
+        raise FileNotFoundError(f"Include file `{incl_path}` not found.")
+
+    with open(incl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or "@" not in line:
+                continue
+
+            pkg, path = line.split("@", 1)
+            pkg = pkg.strip()
+            path = path.strip().strip('"')
+
+            # Always relative to rainc_dir
+            full_path = os.path.normpath(os.path.join(rainc_dir, path))
+            includes[pkg] = full_path
+
     return includes
 
 def objectify(code, base_dir=".", included=None, debug=False):
@@ -74,6 +93,15 @@ def objectify(code, base_dir=".", included=None, debug=False):
                 pkg = ref.split("/", 1)[1]
                 if debug:
                     print("[runtime] Including package:", pkg)
+                try:
+                    if not INCLUDES:
+                        pass
+                except NameError:
+                    raise IncludesNotSpecifiedUponNeed(
+                        "This Rain project references RPM packages (~incl/...) but no include file was specified.\n"
+                        "To use RPM packages, create an include file (e.g. INCL) and rerun with `-i INCL`.\n"
+                        "If you don't know how to structure one, rerun with `-i rainc/incl/INCLUDE` to use your global include list (slower if many packages are installed)."
+                    )
                 if pkg not in INCLUDES:
                     raise InvalidArguments(f"Package `{pkg}` not found in INCLUDE file.")
 
@@ -82,7 +110,6 @@ def objectify(code, base_dir=".", included=None, debug=False):
                     raise InvalidArguments(f"Package zip `{zip_path}` does not exist.")
 
                 with zipfile.ZipFile(zip_path, "r") as z:
-                    # Load all .rain files in the zip
                     for name in z.namelist():
                         if not name.endswith(".rain"):
                             continue
@@ -103,7 +130,6 @@ def objectify(code, base_dir=".", included=None, debug=False):
                 if not os.path.isdir(folder_path):
                     raise InvalidArguments(f"Built package folder `{folder_path}` does not exist.")
 
-                # Walk through the folder and include all .rain files
                 for root, _, files in os.walk(folder_path):
                     for file in files:
                         if not file.endswith(".rain"):
@@ -149,22 +175,18 @@ def objectify(code, base_dir=".", included=None, debug=False):
 def run_objectified(objects, calls, parents, debug=False):
     variables = {"default": {"type": "int", "value": 0, "mut": False}}
 
-    # Check that all parents exist
     for child, parent in parents.items():
         if parent not in objects:
             spacing = (len(child)) + (len(parent) / 1.2) + 1
-            raise ParentNotFound(f"parent.unknown({parent})\n:{child} >> {parent}\n{" " * (int(spacing))}^^^\n`{parent}` is not a defined object")
+            raise ParentNotFound(f"parent.unknown({parent})\n:{child} >> {parent}\n{' ' * (int(spacing))}^^^\n`{parent}` is not a defined object")
 
     def run_object(name, vars_copy):
-        """Run an object and its parent chain in order."""
-        # If this object has a parent, run it first
         if name in parents:
             parent = parents[name]
             if debug:
                 print(f"[inherit] {name} inherits from {parent}")
             run_object(parent, vars_copy)
 
-        # Now run the current object
         for command_line in objects[name]:
             parts = command_line.split()
             if not parts:
@@ -174,20 +196,17 @@ def run_objectified(objects, calls, parents, debug=False):
             if debug:
                 print(vars_copy)
 
-    # Handle calls
     for call_name, call_args in calls:
         if call_name not in objects:
             raise InvalidArguments(f"Object `{call_name}` is not defined.")
         if debug:
             print(f"[call] Running `{call_name}`")
 
-        # Map mutable args to (1), (2), ...
         arg_vars = {f"({i+1})": arg for i, arg in enumerate(call_args)}
         vars_copy = variables.copy()
         vars_copy.update(arg_vars)
 
         run_object(call_name, vars_copy)
-
         variables.update(vars_copy)
 
 def run_command(variables, command, args, object_name):
@@ -195,11 +214,10 @@ def run_command(variables, command, args, object_name):
         if len(args) != 2:
             args_string = " ".join(args)
             spacing = 3 + len(args_string) / 2
-            raise InvalidArguments(f"function.invalidarguments({args_string})\nSET {args_string}\n{" "*int(spacing)}^^^\ncommand SET only accepts 2 arguments, VAR and VAL.")
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nSET {args_string}\n{' '*int(spacing)}^^^\ncommand SET only accepts 2 arguments, VAR and VAL.")
         key, val = args
         if val in variables:
             val = variables[val]
-        # Try to convert to int if possible
         try:
             val = int(val)
         except (ValueError, TypeError):
@@ -207,7 +225,9 @@ def run_command(variables, command, args, object_name):
         variables[key] = val
     elif command == "ADD":
         if len(args) != 3:
-            raise InvalidArguments(f"function.invalidarguments({args_string})\nSET {args_string}\n{" "*int(spacing)}^^^\ncommand ADD only accepts 3 arguments, VAROUT, VARINa and VARINb")
+            args_string = " ".join(args)
+            spacing = 3 + len(args_string) / 2
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nADD {args_string}\n{' '*int(spacing)}^^^\ncommand ADD only accepts 3 arguments, VAROUT, VARINa and VARINb.")
         target, a, b = args
         val_a = int(variables.get(a, a))
         val_b = int(variables.get(b, b))
@@ -222,7 +242,7 @@ def run_command(variables, command, args, object_name):
             argument = str(argument)
             if argument.startswith("(") and argument.endswith(")"):
                 if argument not in variables:
-                    print(f"mutable.unknown({argument.replace("(", "").replace(")", "")})")
+                    print(f"mutable.unknown({argument.replace('(', '').replace(')', '')})")
                     stopped = True
             if argument.startswith('"') and arg.endswith('"'):
                 argument = arg.strip('"')
@@ -232,27 +252,25 @@ def run_command(variables, command, args, object_name):
         if not stopped:
             print(" ".join(output))
     else:
-        command = command.replace(" ", "")
-        if len(command) <= 3:
-            spacing = 0
-            if spacing < 0:
-                spacing = 0
-        else:
-            spacing = int(len(command) / 2) - 1
-            if spacing < 0:
-                spacing = 0
-        raise InvalidCommand(f"command.unknown({command})\n{command}\n{" "*int(spacing)}^^^\ninvalid command `{command}` in object `{object_name}`")
+        spacing = max(0, int(len(command) / 2) - 1)
+        raise InvalidCommand(f"command.unknown({command})\n{command}\n{' '*int(spacing)}^^^\ninvalid command `{command}` in object `{object_name}`")
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="run a Rain file")
+
+    parser = argparse.ArgumentParser(description="Run a Rain file")
     parser.add_argument("file", type=str, help="the Rain file to run")
-    parser.add_argument("--debug", "-d", action="store_true", help="Enable debug mode.")
+    parser.add_argument("-i", "--include", type=str, help="Optional INCLUDE file for package references")
+    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode.")
     args = parser.parse_args()
 
     with open(args.file) as f:
         code = f.readlines()
 
-    INCLUDES = load_includes()
+    if args.include == "rainc/incl/INCLUDE":
+        INCLUDES = load_includes()
+    elif args.include:
+        INCLUDES = load_from_include_file(args.include)
+
     objs, calls, parents = objectify(code, base_dir=os.path.dirname(os.path.abspath(args.file)), debug=args.debug)
     run_objectified(objs, calls, parents, debug=args.debug)
