@@ -1,5 +1,0 @@
-:PRINT {
-   PRINT (1)
-}
-
-PRINT:("Hello!")
