@@ -78,8 +78,8 @@ def transpile_rain_to_python(rain_files, output_py, includes=None):
             escaped = line.rstrip("\n").replace("\\", "\\\\").replace('"', '\\"')
             f.write(f'    "{escaped}",\n')
         f.write("]\n\n")
-        f.write(f"objs, calls, parents = main.objectify(code, base_dir=r'{common_base}')\n")
-        f.write("main.run_objectified(objs, calls, parents)\n")
+        f.write(f"objs, calls, parents, conditions = main.objectify(code, base_dir=r'{common_base}')\n")
+        f.write("main.run_objectified(objs, calls, parents, conditions)\n")
 
 
 def build_executable(python_file, output_name, includes=None):
