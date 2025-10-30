@@ -3,8 +3,11 @@ import os
 
 class InvalidArguments(Exception): pass
 class ParentNotFound(Exception): pass
+class ConditionNotFound(Exception): pass
 class InvalidCommand(Exception): pass
+class ConditionNotCondition(Exception): pass
 class IncludesNotSpecifiedUponNeed(Exception): pass
+class InvalidSequenceOfOperatives(Exception): pass
 included_files = set()
 
 def get_rainc_dir():
@@ -60,6 +63,7 @@ def objectify(code, base_dir=".", included=None, debug=False):
         included = set()
     objects = {}
     parents = {}
+    conditions = {}
     calls = []
     code = [line.strip() for line in code if line.strip()]
     i = 0
@@ -70,11 +74,56 @@ def objectify(code, base_dir=".", included=None, debug=False):
             continue
         elif line.startswith(":") and "{" in line:
             # Object definition
-            name = line.split(":", 1)[1].split("{", 1)[0].strip()
-            if ">>" in name:
-                name = line.split(">>", 1)[0].replace(" ", "").replace(":", "")
-                parent = line.split(">>", 1)[1].replace(" ", "").replace("{", "")
+            line_clean = line.replace(" ", "")
+            header, _ = line_clean.split("{", 1)
+
+            name = header.split(":", 1)[1]
+            parent = None
+            condition = None
+            first = None
+            
+
+            char = None
+            idx = 0
+            while idx < len(header) - 1:
+                curr = header[idx]
+                nxt = header[idx + 1]
+
+                if curr == "?" and nxt == "?":
+                    first = "??"
+                    break
+                elif curr == ">" and nxt == ">":
+                    first = ">>"
+                    break
+
+                idx += 1
+
+
+            if first == ">>":
+                name, after = header.split(">>", 1)
+                name = name.replace(":", "").strip()
+                if "??" in after:
+                    parent, condition = after.split("??", 1)
+                    conditions[name] = condition
+                elif ">>" in after:
+                    raise InvalidSequenceOfOperatives(f"object {name} has an invalid sequence,\nit uses >> twice when only a singular >> is permitted")
+                else:
+                    parent = after
                 parents[name] = parent
+            elif first == "??":
+                name, after = header.split("??", 1)
+                name = name.replace(":", "").strip()
+                if ">>" in after:
+                    objA = name
+                    objBandC = str(after).split(">>", 1)
+                    objB = objBandC[0]
+                    objC = objBandC[1]
+                    raise InvalidSequenceOfOperatives(f"object {name} has an invalid sequence,\nit uses {objA} ?? {objB} >> {objC},\nto have a valid sequence, use {objA} >> {objB} ?? {objC}")
+                elif "??" in after:
+                    raise InvalidSequenceOfOperatives(f"object {name} has an invalid sequence,\nit uses ?? twice when only a singular ?? is permitted")
+                else:
+                    condition = after
+                    conditions[name] = condition
             content = []
             i += 1
             while i < len(code):
@@ -115,7 +164,8 @@ def objectify(code, base_dir=".", included=None, debug=False):
                             continue
                         with z.open(name) as f:
                             ref_code = [line.decode("utf-8").strip("\n") for line in f.readlines()]
-                        ref_objects, ref_calls, ref_parents = objectify(ref_code, base_dir=".", included=included)
+                        ref_objects, ref_calls, ref_parents, ref_conditions = objectify(ref_code, base_dir=".", included=included)
+                        conditions.update(ref_conditions)
                         objects.update(ref_objects)
                         calls.extend(ref_calls)
                         parents.update(ref_parents)
@@ -170,9 +220,9 @@ def objectify(code, base_dir=".", included=None, debug=False):
                 args = [arg.strip() for arg in args_inside.split(";") if arg.strip()]
             calls.append((call_name, args))
         i += 1
-    return objects, calls, parents
+    return objects, calls, parents, conditions
 
-def run_objectified(objects, calls, parents, debug=False):
+def run_objectified(objects, calls, parents, conditions, debug=False):
     variables = {"default": {"type": "int", "value": 0, "mut": False}}
 
     for child, parent in parents.items():
@@ -180,21 +230,62 @@ def run_objectified(objects, calls, parents, debug=False):
             spacing = (len(child)) + (len(parent) / 1.2) + 1
             raise ParentNotFound(f"parent.unknown({parent})\n:{child} >> {parent}\n{' ' * (int(spacing))}^^^\n`{parent}` is not a defined object")
 
-    def run_object(name, vars_copy):
-        if name in parents:
+    for object, condition in conditions.items():
+        if condition not in objects:
+            spacing = (len(object)) + (len(condition) / 1.2) + 1
+            raise ConditionNotFound(f"condition.unknown({condition})\n:{object} ?? {condition}\n{' ' * (int(spacing))}^^^\n`{condition}` is not a defined object")
+
+    def run_object(name, vars_copy, ignore_op=False):
+        norun = False
+
+        # Handle inheritance
+        if name in parents and not ignore_op:
             parent = parents[name]
             if debug:
                 print(f"[inherit] {name} inherits from {parent}")
             run_object(parent, vars_copy)
 
-        for command_line in objects[name]:
-            parts = command_line.split()
-            if not parts:
-                continue
-            cmd, *args = parts
-            run_command(vars_copy, cmd, args, name)
+        # Handle conditional objects
+        if name in conditions and not ignore_op:
+            condition = conditions[name]
             if debug:
-                print(vars_copy)
+                print(f"[condition] {name} checks {condition}")
+
+            ret = run_object(condition, vars_copy)
+
+            if not isinstance(ret, bool):
+                spacing = (len(name)) + int(len(condition) / 1.2) + 1
+                raise ConditionNotCondition(
+                    f"condition.notcondition({condition})\n"
+                    f":{name} ?? {condition}\n"
+                    f"{' ' * spacing}^^^\n"
+                    f"`{condition}` does not return a boolean value.\n"
+                    f"This makes `{condition}` invalid as a condition."
+                )
+
+            if not ret:
+                norun = True
+
+        # Execute object body
+        if not norun:
+            for command_line in objects[name]:
+                parts = command_line.split()
+                if not parts:
+                    continue
+
+                cmd, *args = parts
+                run_command(vars_copy, cmd, args, name)
+
+                if debug:
+                    print(vars_copy)
+
+        # Return __ret__ if set
+        if "__res__" in vars_copy:
+            ret_val = vars_copy["__res__"]
+            if isinstance(ret_val, bool):
+                return ret_val
+
+        return None
 
     for call_name, call_args in calls:
         if call_name not in objects:
@@ -251,6 +342,104 @@ def run_command(variables, command, args, object_name):
             output.append(argument)
         if not stopped:
             print(" ".join(output))
+    elif command == "RET":
+        expr = " ".join(args).strip()
+
+        if not expr:
+            raise InvalidArguments("RET requires an expression or value.")
+
+        # Handle simple literals
+        if expr.lower() in ["true", "false"]:
+            variables["__ret__"] = expr.lower() == "true"
+            return
+
+        # Tokenize (split while keeping operators)
+        tokens = []
+        current = ""
+        for ch in expr:
+            if ch in "=!<>":
+                if current.strip():
+                    tokens.append(current.strip())
+                    current = ""
+                current += ch
+            elif ch == " ":
+                if current.strip():
+                    tokens.append(current.strip())
+                    current = ""
+            else:
+                # When previous token was an operator like "<=" etc.
+                if current in ["=", "!", "<", ">"]:
+                    if len(current) == 1 or current in ["<", ">", "!"]:
+                        tokens.append(current)
+                        current = ""
+                current += ch
+        if current.strip():
+            tokens.append(current.strip())
+
+        # Merge multi-char operators like "<=", ">=", "!="
+        merged = []
+        i = 0
+        while i < len(tokens):
+            if i + 1 < len(tokens) and (tokens[i] + tokens[i + 1]) in ["<=", ">=", "!="]:
+                merged.append(tokens[i] + tokens[i + 1])
+                i += 2
+            else:
+                merged.append(tokens[i])
+                i += 1
+        tokens = merged
+
+        # Expect pattern like val op val op val op val ...
+        if len(tokens) < 3:
+            raise InvalidArguments(f"RET expression `{expr}` invalid (too short)")
+
+        def try_cast(v):
+            if v in variables:
+                v = variables[v]
+            try:
+                if "." in str(v):
+                    return float(v)
+                else:
+                    return int(v)
+            except (ValueError, TypeError):
+                return str(v).strip('"').strip("'")
+
+        # Evaluate chained comparisons
+        result = True
+        i = 0
+        while i < len(tokens) - 2:
+            left = try_cast(tokens[i])
+            op = tokens[i + 1]
+            right = try_cast(tokens[i + 2])
+
+            if op == "=":
+                ok = left == right
+            elif op == "!=":
+                ok = left != right
+            elif op == "<":
+                ok = left < right
+            elif op == ">":
+                ok = left > right
+            elif op == "<=":
+                ok = left <= right
+            elif op == ">=":
+                ok = left >= right
+            else:
+                raise InvalidArguments(f"RET expression invalid operator `{op}`")
+
+            if not ok:
+                result = False
+                break
+
+            i += 2  # move to next comparison in chain
+
+        variables["__res__"] = result
+    elif command == "EXST":
+        if len(args) != 1:
+            args_string = " ".join(args)
+            spacing = 3 + len(args_string) / 2
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nEXST {args_string}\n{' '*int(spacing)}^^^\ncommand EXST only accepts 1 argument, VAR")
+        if args[0] in variables: variables["__res__"] = True
+        if args[0] not in variables: variables["__res__"] = False
     else:
         spacing = max(0, int(len(command) / 2) - 1)
         raise InvalidCommand(f"command.unknown({command})\n{command}\n{' '*int(spacing)}^^^\ninvalid command `{command}` in object `{object_name}`")
@@ -272,5 +461,5 @@ if __name__ == "__main__":
     elif args.include:
         INCLUDES = load_from_include_file(args.include)
 
-    objs, calls, parents = objectify(code, base_dir=os.path.dirname(os.path.abspath(args.file)), debug=args.debug)
-    run_objectified(objs, calls, parents, debug=args.debug)
+    objs, calls, parents, conditions = objectify(code, base_dir=os.path.dirname(os.path.abspath(args.file)), debug=args.debug)
+    run_objectified(objs, calls, parents, conditions, debug=args.debug)
