@@ -1,3 +1,9 @@
+# Trello
+
+I've made a trello page for future updates so make sure to go check it out:
+
+https://trello.com/b/V4G0Djbh
+
 Rain
 ====
 
