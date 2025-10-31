@@ -53,10 +53,83 @@ def load_from_include_file(incl_path):
             path = path.strip().strip('"')
 
             # Always relative to rainc_dir
-            full_path = os.path.normpath(os.path.join(rainc_dir, path))
+            if path.startswith("packages/") or path.startswith("incl/"):
+                full_path = os.path.normpath(os.path.join(rainc_dir, path))
+            else:
+                full_path = os.path.abspath(os.path.join(os.path.dirname(incl_path), path))
             includes[pkg] = full_path
 
     return includes
+
+def check_operatives(header):
+    conditions = {}
+    parents = {}
+
+    name = header.strip()
+    first = None
+
+    # Detect first operative in header
+    for idx in range(len(header) - 1):
+        curr, nxt = header[idx], header[idx + 1]
+        if curr == "?" and nxt == "?":
+            first = "??"
+            break
+        elif curr == ">" and nxt == ">":
+            first = ">>"
+            break
+
+    if first == ">>":
+        name, after = header.split(">>", 1)
+        name = name.replace(":", "").strip()
+        after = after.strip()
+
+        # If conditional is used after >>, split it
+        if "??" in after:
+            parent_part, condition_part = after.split("??", 1)
+            parents[name] = [p.strip() for p in parent_part.split("&&")]
+            conditions[name] = condition_part.strip()
+
+        # Multiple inheritance
+        elif "&&" in after:
+            parents[name] = [p.strip() for p in after.split("&&")]
+
+        # Invalid >> sequence
+        elif ">>" in after:
+            first_parent = after.split(">>", 1)[0].strip()
+            second_part = after.split(">>", 1)[1].replace(">>", "&&")
+            raise InvalidSequenceOfOperatives(
+                f"object {name} has an invalid sequence,\n"
+                f"it uses `>>` twice when only a singular `>>` is permitted,\n"
+                f"To inherit multiple objects, use {name} >> {first_parent} && {second_part}"
+            )
+
+        # Single parent
+        else:
+            parents[name] = [after.strip()]
+
+    elif first == "??":
+        name, after = header.split("??", 1)
+        name = name.replace(":", "").strip()
+        after = after.strip()
+
+        # ?? cannot be followed by >> or another ??
+        if ">>" in after:
+            objA = name
+            objB, objC = [s.strip() for s in after.split(">>", 1)]
+            raise InvalidSequenceOfOperatives(
+                f"object {name} has an invalid sequence,\n"
+                f"it uses {objA} ?? {objB} >> {objC},\n"
+                f"to have a valid sequence, use {objA} >> {objB} ?? {objC}"
+            )
+        elif "??" in after:
+            raise InvalidSequenceOfOperatives(
+                f"object {name} has an invalid sequence,\n"
+                f"it uses ?? twice when only a singular ?? is permitted"
+            )
+        else:
+            conditions[name] = after.strip()
+
+    return conditions, parents, first
 
 def objectify(code, base_dir=".", included=None, debug=False):
     if included is None:
@@ -76,54 +149,24 @@ def objectify(code, base_dir=".", included=None, debug=False):
             # Object definition
             line_clean = line.replace(" ", "")
             header, _ = line_clean.split("{", 1)
-
             name = header.split(":", 1)[1]
-            parent = None
-            condition = None
-            first = None
-            
 
-            char = None
-            idx = 0
-            while idx < len(header) - 1:
-                curr = header[idx]
-                nxt = header[idx + 1]
+            new_conditions, new_parents, first = check_operatives(name)
+            base_name = name.split(first, 1)[0]
+            conditions.update(new_conditions)
+            parents.update(new_parents)
 
-                if curr == "?" and nxt == "?":
-                    first = "??"
-                    break
-                elif curr == ">" and nxt == ">":
-                    first = ">>"
-                    break
+            if "}" in line:
+                # inline object:
+                # :test {SET a 1; PRINT a}
+                body = line.split("{", 1)[1].split(";")
+                body = [cmd.strip().strip("}") for cmd in body if cmd.strip()]
+                objects[base_name] = body
+                if debug:
+                    print(f"[inline object] {base_name} -> {body}")
+                i += 1
+                continue
 
-                idx += 1
-
-
-            if first == ">>":
-                name, after = header.split(">>", 1)
-                name = name.replace(":", "").strip()
-                if "??" in after:
-                    parent, condition = after.split("??", 1)
-                    conditions[name] = condition
-                elif ">>" in after:
-                    raise InvalidSequenceOfOperatives(f"object {name} has an invalid sequence,\nit uses >> twice when only a singular >> is permitted")
-                else:
-                    parent = after
-                parents[name] = parent
-            elif first == "??":
-                name, after = header.split("??", 1)
-                name = name.replace(":", "").strip()
-                if ">>" in after:
-                    objA = name
-                    objBandC = str(after).split(">>", 1)
-                    objB = objBandC[0]
-                    objC = objBandC[1]
-                    raise InvalidSequenceOfOperatives(f"object {name} has an invalid sequence,\nit uses {objA} ?? {objB} >> {objC},\nto have a valid sequence, use {objA} >> {objB} ?? {objC}")
-                elif "??" in after:
-                    raise InvalidSequenceOfOperatives(f"object {name} has an invalid sequence,\nit uses ?? twice when only a singular ?? is permitted")
-                else:
-                    condition = after
-                    conditions[name] = condition
             content = []
             i += 1
             while i < len(code):
@@ -135,7 +178,7 @@ def objectify(code, base_dir=".", included=None, debug=False):
                     break
                 content.append(line)
                 i += 1
-            objects[name] = content
+            objects[base_name] = content
         elif line.startswith("~"):
             ref = line[1:].strip()
             if ref.startswith("incl/"):
@@ -190,7 +233,8 @@ def objectify(code, base_dir=".", included=None, debug=False):
                         included.add(filename)
                         with open(filename, "r", encoding="utf-8") as f:
                             ref_code = f.readlines()
-                        ref_objects, ref_calls, ref_parents = objectify(ref_code, os.path.dirname(filename), included, debug=debug)
+                        ref_objects, ref_calls, ref_parents, ref_conditions = objectify(ref_code, os.path.dirname(filename), included, debug=debug)
+                        conditions.update(ref_conditions)
                         objects.update(ref_objects)
                         calls.extend(ref_calls)
                         parents.update(ref_parents)
@@ -225,33 +269,55 @@ def objectify(code, base_dir=".", included=None, debug=False):
 def run_objectified(objects, calls, parents, conditions, debug=False):
     variables = {"default": {"type": "int", "value": 0, "mut": False}}
 
+    # --- Validate relationships ---
     for child, parent in parents.items():
-        if parent not in objects:
-            spacing = (len(child)) + (len(parent) / 1.2) + 1
-            raise ParentNotFound(f"parent.unknown({parent})\n:{child} >> {parent}\n{' ' * (int(spacing))}^^^\n`{parent}` is not a defined object")
+        if not parent:
+            continue
 
-    for object, condition in conditions.items():
-        if condition not in objects:
-            spacing = (len(object)) + (len(condition) / 1.2) + 1
-            raise ConditionNotFound(f"condition.unknown({condition})\n:{object} ?? {condition}\n{' ' * (int(spacing))}^^^\n`{condition}` is not a defined object")
+        # Make sure we always have a list of parents
+        parent_list = parent if isinstance(parent, list) else [parent]
 
-    def run_object(name, vars_copy, ignore_op=False):
+        for p in parent_list:
+            if p not in objects:
+                spacing = len(child) + (len(p) / 1.2) + 1
+                raise ParentNotFound(
+                    f"parent.unknown({p})\n:{child} >> {p}\n{' ' * int(spacing)}^^^\n`{p}` is not a defined object"
+                )
+
+    for obj, cond in conditions.items():
+        if cond not in objects:
+            spacing = (len(obj)) + (len(cond) / 1.2) + 1
+            raise ConditionNotFound(
+                f"condition.unknown({cond})\n:{obj} ?? {cond}\n{' ' * int(spacing)}^^^\n`{cond}` is not a defined object"
+            )
+
+    # --- Internal object runner ---
+    def run_object(name, vars_copy, ignore_op=False, question=False):
         norun = False
 
-        # Handle inheritance
-        if name in parents and not ignore_op:
-            parent = parents[name]
-            if debug:
-                print(f"[inherit] {name} inherits from {parent}")
-            run_object(parent, vars_copy)
+        # Inheritance
+        if name in parents.keys() and not ignore_op:
+            if isinstance(parents[name], list):
+                parent_list = parents[name]
+                for p in parent_list:
+                    if debug:
+                        print(f"[inherit] {name} inherits from {p}")
+                    run_object(p, vars_copy, ignore_op=False)
+            else:
+                parent = parents[name]
+                if debug:
+                    print(f"[inherit] {name} inherits from {parent}")
+                run_object(parent, vars_copy, ignore_op=False)
 
-        # Handle conditional objects
+        # Conditional execution
         if name in conditions and not ignore_op:
             condition = conditions[name]
             if debug:
                 print(f"[condition] {name} checks {condition}")
 
-            ret = run_object(condition, vars_copy)
+            # Isolated evaluation scope
+            temp_vars = {}
+            ret = run_object(condition, temp_vars, ignore_op=False, question=True)
 
             if not isinstance(ret, bool):
                 spacing = (len(name)) + int(len(condition) / 1.2) + 1
@@ -266,7 +332,7 @@ def run_objectified(objects, calls, parents, conditions, debug=False):
             if not ret:
                 norun = True
 
-        # Execute object body
+        # Execute object body (only if allowed)
         if not norun:
             for command_line in objects[name]:
                 parts = command_line.split()
@@ -277,28 +343,43 @@ def run_objectified(objects, calls, parents, conditions, debug=False):
                 run_command(vars_copy, cmd, args, name)
 
                 if debug:
+                    print(f"[{name}] {cmd} {' '.join(args)}")
                     print(vars_copy)
 
-        # Return __ret__ if set
+        # Return __res__ if it’s a boolean
         if "__res__" in vars_copy:
             ret_val = vars_copy["__res__"]
+            vars_copy.pop("__res__")
             if isinstance(ret_val, bool):
                 return ret_val
 
+        if "__CALL__.obj" in vars_copy:
+            obj = vars_copy["__CALL__.obj"]
+            obj_args = vars_copy["__CALL__.args"]
+            vars_copy.pop("__CALL__.obj")
+            vars_copy.pop("__CALL__.args")
+            temp_vars = {}
+            for i, value in enumerate(obj_args):
+                if value in vars_copy:
+                    value = vars_copy[value]
+                temp_vars[f"({i + 1})"] = value
+            run_object(obj, temp_vars, False, False)
+
         return None
 
+    # --- Execute callables ---
     for call_name, call_args in calls:
         if call_name not in objects:
             raise InvalidArguments(f"Object `{call_name}` is not defined.")
         if debug:
             print(f"[call] Running `{call_name}`")
 
+        # New isolated scope for this call
         arg_vars = {f"({i+1})": arg for i, arg in enumerate(call_args)}
         vars_copy = variables.copy()
         vars_copy.update(arg_vars)
 
         run_object(call_name, vars_copy)
-        variables.update(vars_copy)
 
 def run_command(variables, command, args, object_name):
     if command == "SET":
@@ -440,6 +521,47 @@ def run_command(variables, command, args, object_name):
             raise InvalidArguments(f"function.invalidarguments({args_string})\nEXST {args_string}\n{' '*int(spacing)}^^^\ncommand EXST only accepts 1 argument, VAR")
         if args[0] in variables: variables["__res__"] = True
         if args[0] not in variables: variables["__res__"] = False
+    elif command == "CALL":
+        obj = args[0]
+        obj_args = args[1:]
+        variables["__CALL__.obj"] = obj
+        variables["__CALL__.args"] = obj_args
+    elif command == "SUB":
+        if len(args) != 3:
+            args_string = " ".join(args)
+            spacing = 3 + len(args_string) / 2
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nSUB {args_string}\n{' '*int(spacing)}^^^\ncommand SUB only accepts 3 arguments, VAROUT, VARINa and VARINb.")
+        target, a, b = args
+        val_a = int(variables.get(a, a))
+        val_b = int(variables.get(b, b))
+        variables[target] = val_a - val_b
+    elif command == "MUL":
+        if len(args) != 3:
+            args_string = " ".join(args)
+            spacing = 3 + len(args_string) / 2
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nMUL {args_string}\n{' '*int(spacing)}^^^\ncommand MUL only accepts 3 arguments, VAROUT, VARINa and VARINb.")
+        target, a, b = args
+        val_a = int(variables.get(a, a))
+        val_b = int(variables.get(b, b))
+        variables[target] = val_a * val_b
+    elif command == "DIV":
+        if len(args) != 3:
+            args_string = " ".join(args)
+            spacing = 3 + len(args_string) / 2
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nDIV {args_string}\n{' '*int(spacing)}^^^\ncommand DIV only accepts 3 arguments, VAROUT, VARINa and VARINb.")
+        target, a, b = args
+        val_a = int(variables.get(a, a))
+        val_b = int(variables.get(b, b))
+        variables[target] = val_a / val_b
+    elif command == "MOD":
+        if len(args) != 3:
+            args_string = " ".join(args)
+            spacing = 3 + len(args_string) / 2
+            raise InvalidArguments(f"function.invalidarguments({args_string})\nMOD {args_string}\n{' '*int(spacing)}^^^\ncommand MOD only accepts 3 arguments, VAROUT, VARINa and VARINb.")
+        target, a, b = args
+        val_a = int(variables.get(a, a))
+        val_b = int(variables.get(b, b))
+        variables[target] = val_a % val_b
     else:
         spacing = max(0, int(len(command) / 2) - 1)
         raise InvalidCommand(f"command.unknown({command})\n{command}\n{' '*int(spacing)}^^^\ninvalid command `{command}` in object `{object_name}`")

@@ -52,6 +52,7 @@ def uninstall(pkg):
     print(f"[rpm] Uninstalled {pkg}")
 
 def list_packages():
+    rainc_dir = get_rainc_dir()
     _, incl_file = get_paths()
     lines = read_include(incl_file)
     if not lines:
@@ -59,7 +60,8 @@ def list_packages():
     else:
         print("[rpm] Installed packages:")
         for ln in lines:
-            print("  " + ln)
+            location = ln.split("@")[1].strip().strip("'").strip('"')
+            print("\n  " + ln + "\n  >  fullpath: " + os.path.normpath(os.path.join(rainc_dir, location)) + "\n")
 
 def update(pkg, url):
     print(f"[rpm] Updating {pkg}")
